@@ -1,0 +1,115 @@
+﻿rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid));
+    }
+
+    function isFrozen(uid) {
+      return userDoc(uid).data.is_frozen == true;
+    }
+
+    function blockDocId(a, b) {
+      return a + "_" + b;
+    }
+
+    function isBlocked(a, b) {
+      return exists(/databases/$(database)/documents/blocks/$(blockDocId(a, b)));
+    }
+
+    function isMutuallyAllowed(a, b) {
+      return !isBlocked(a, b) && !isBlocked(b, a);
+    }
+
+    match /users/{uid} {
+      allow read: if isSignedIn();
+      allow create: if isSelf(uid);
+      allow update: if isSelf(uid)
+        && !('is_frozen' in request.resource.data)
+        && !('is_restricted' in request.resource.data)
+        && !('trust_score' in request.resource.data)
+        && !('review_avg' in request.resource.data)
+        && !('review_count' in request.resource.data)
+        && !('low_rating_ratio' in request.resource.data)
+        && !('kyc_status' in request.resource.data);
+      allow delete: if false;
+    }
+
+    match /items/{itemId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.owner_uid == request.auth.uid
+        && !isFrozen(request.auth.uid);
+      allow update: if isSignedIn()
+        && resource.data.owner_uid == request.auth.uid
+        && request.resource.data.owner_uid == resource.data.owner_uid
+        && !isFrozen(request.auth.uid);
+      allow delete: if isSignedIn() && resource.data.owner_uid == request.auth.uid;
+    }
+
+    match /swap_offers/{offerId} {
+      allow read: if isSignedIn()
+        && (resource.data.proposer_uid == request.auth.uid || resource.data.receiver_uid == request.auth.uid);
+
+      allow create: if isSignedIn()
+        && request.resource.data.proposer_uid == request.auth.uid
+        && request.resource.data.receiver_uid is string
+        && request.resource.data.receiver_uid != request.auth.uid
+        && isMutuallyAllowed(request.auth.uid, request.resource.data.receiver_uid)
+        && !isFrozen(request.auth.uid);
+
+      allow update: if isSignedIn()
+        && (resource.data.proposer_uid == request.auth.uid || resource.data.receiver_uid == request.auth.uid)
+        && !isFrozen(request.auth.uid);
+
+      allow delete: if false;
+    }
+
+    match /transactions/{txId} {
+      allow read: if isSignedIn()
+        && (resource.data.user_a_uid == request.auth.uid || resource.data.user_b_uid == request.auth.uid);
+
+      allow create, update, delete: if false;
+    }
+
+    match /chats/{chatId} {
+      allow read: if isSignedIn() && request.auth.uid in resource.data.member_uids;
+      allow create, update, delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if isSignedIn()
+          && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.member_uids;
+        allow create, update, delete: if false;
+      }
+    }
+
+    match /reviews/{reviewId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if false;
+    }
+
+    match /reports/{reportId} {
+      allow create: if isSignedIn() && request.resource.data.reporter_uid == request.auth.uid;
+      allow read: if isSignedIn() && resource.data.reporter_uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /blocks/{blockId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.blocker_uid == request.auth.uid
+        && blockId == blockDocId(request.resource.data.blocker_uid, request.resource.data.blocked_uid);
+      allow delete: if isSignedIn() && resource.data.blocker_uid == request.auth.uid;
+      allow update: if false;
+    }
+  }
+}
